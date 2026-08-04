@@ -35,6 +35,8 @@
     .status { display:none; margin-top:16px; padding:13px 14px; border-radius:13px; background:#ebe9df; font-size:13px; line-height:1.45; }
     .status.show { display:block; }
     .status.error { background:#f7e5df; color:#8a301e; }
+    .dev-panel { display:none; margin-top:12px; padding:12px 14px; border:1px dashed #9aa89f; border-radius:13px; color:var(--muted); font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace; white-space:pre-wrap; }
+    .dev-panel.show { display:block; }
     .result { display:none; margin-top:16px; padding:17px; border:1px solid var(--line); border-radius:16px; background:var(--card); }
     .result.show { display:block; }
     .result-row { display:flex; align-items:end; justify-content:space-between; gap:15px; }
@@ -77,6 +79,7 @@
 
       <button id="generate" class="generate" disabled>Generate my loop</button>
       <div id="status" class="status" role="status" aria-live="polite"></div>
+      <div id="devPanel" class="dev-panel" aria-live="polite"></div>
       <div id="result" class="result">
         <div class="result-row"><div class="miles"><span id="actual">—</span> <small>mi</small></div><div id="match" class="match"></div></div>
         <div class="stats">
@@ -96,12 +99,14 @@
   <script>
     'use strict';
     const M_PER_MI = 1609.344;
+    const CACHE_VERSION = 1, CACHE_PREFIX = `activ-map-v${CACHE_VERSION}:`, CACHE_TTL = 7*24*60*60*1000, MAX_CACHE_ENTRIES = 6;
+    let mapCachePromise;
     const OVERPASS_ENDPOINTS = [
       'https://lz4.overpass-api.de/api/interpreter',
       'https://z.overpass-api.de/api/interpreter',
       'https://overpass.private.coffee/api/interpreter'
     ];
-    const state = { location:null, graph:null, features:null, routeLayer:null, marker:null, dataKey:'' };
+    const state = { location:null, graph:null, features:null, routeLayer:null, marker:null, dataKey:'', timings:{}, cacheSource:'' };
     const $ = id => document.getElementById(id);
     const map = L.map('map', { zoomControl:false }).setView([40, -98], 4);
     L.control.zoom({position:'bottomright'}).addTo(map);
@@ -119,6 +124,7 @@
     // Deterministic QA hook. Supplying ?testLat=...&testLon=... bypasses
     // geolocation prompts without adding controls to the production UI.
     const testParams=new URLSearchParams(location.search),testLat=Number(testParams.get('testLat')),testLon=Number(testParams.get('testLon'));
+    const devMode=testParams.has('debug')||testParams.get('qa')==='1';
     if(testParams.has('testLat')&&testParams.has('testLon')&&Number.isFinite(testLat)&&Number.isFinite(testLon)){
       state.location={lat:testLat,lon:testLon};$('generate').disabled=false;
       $('locate').classList.add('ready');$('locate').innerHTML='<span>✓</span><span>Test location ready</span>';
@@ -131,6 +137,14 @@
       $('status').className = 'status show' + (error ? ' error' : '');
     }
     function clearStatus(){ $('status').className='status'; }
+    function mark(name,start){ state.timings[name]=Math.round(performance.now()-start); renderTimings(); }
+    function renderTimings(extra=''){
+      if(!devMode)return;
+      const lines=Object.entries(state.timings).map(([name,ms])=>`${name}: ${ms} ms`);
+      if(state.cacheSource)lines.push(`map data: ${state.cacheSource}`);
+      if(extra)lines.push(extra);
+      $('devPanel').textContent=lines.join('\n');$('devPanel').className='dev-panel show';
+    }
     function locate() {
       if (!navigator.geolocation) return status('This browser does not support location sharing.', true);
       $('locate').disabled=true; $('locate').innerHTML='<span>◌</span><span>Finding you…</span>'; clearStatus();
@@ -156,12 +170,17 @@
       if (!Number.isFinite(miles)||miles<.5||miles>20) return status('Choose a distance from 0.5 to 20 miles.',true);
       $('generate').disabled=true; $('result').className='result';
       try {
+        state.timings={}; const totalStart=performance.now();
         const target=miles*M_PER_MI;
         status('Loading nearby paths, parks, and crossings…');
+        const loadStart=performance.now();
         const data=await loadNetwork(target);
+        mark('load map + graph',loadStart);
         status(`Building a loop from ${data.nodes.size.toLocaleString()} map points…`);
         await tick();
+        const routeStart=performance.now();
         const result=findLoop(data,target,$('preset').value);
+        mark('route search',routeStart);
         if (!result || result.coords.length<2) throw new Error('No connected loop could be built here. Try a shorter distance or move the map to an area with more mapped paths.');
         drawRoute(result.coords);
         const actual=result.distance/M_PER_MI;
@@ -173,6 +192,7 @@
         $('repeatStat').textContent=`${Math.round(result.stats.repeatedMeters/result.distance*100)}%`;
         $('result').className='result show';
         status(delta<=15?'Loop ready. Have a great run.':'Closest loop found — actual distance shown below.');
+        mark('total',totalStart);
       } catch(err) { console.error(err); status(err.message||'Something went wrong while generating the route.',true); }
       finally { $('generate').disabled=false; }
     }
@@ -189,14 +209,14 @@
     }
     async function loadNetwork(target) {
       const b=bboxFor(target), key=[b.s,b.w,b.n,b.e].map(x=>x.toFixed(3)).join(',');
-      if(state.graph&&state.dataKey===key) return state.graph;
+      if(state.graph&&state.dataKey===key){state.cacheSource='memory cache';return state.graph;}
       const box=`${b.s},${b.w},${b.n},${b.e}`;
       // Keep the route-critical road query small. Scenery and crossing data is
       // fetched independently; a slow enrichment must never prevent a route.
       const roadQuery=`[out:json][timeout:22];way[highway~"^(footway|path|residential|living_street|pedestrian|tertiary|secondary|unclassified|service|track|steps)$"][foot!="no"][access!="private"](${box});out geom;`;
       const featureQuery=`[out:json][timeout:12];(way[leisure~"^(park|garden)$"](${box});way[landuse="forest"](${box});way[natural="water"](${box});way[waterway~"^(river|stream|canal)$"](${box});node[highway="traffic_signals"](${box});node[crossing](${box}););out geom;`;
-      const enrichment=fetchOverpass(featureQuery,{timeout:12000,quiet:true}).catch(err=>{console.warn('Optional map enrichment unavailable:',err.message);return null;});
-      const roadJson=await fetchOverpass(roadQuery);
+      const enrichment=fetchOverpassCached(featureQuery,'features',{timeout:12000,quiet:true}).catch(err=>{console.warn('Optional map enrichment unavailable:',err.message);return null;});
+      const roadJson=await fetchOverpassCached(roadQuery,'roads');
       let elements=roadJson.elements;
       status('Roads loaded — checking parks and crossings…');
       const featureJson=await Promise.race([enrichment,new Promise(resolve=>setTimeout(()=>resolve(null),2500))]);
@@ -204,6 +224,31 @@
       state.graph=buildGraph(elements); state.dataKey=key;
       if(state.graph.nodes.size<10) throw new Error('Not enough runnable paths were found near this location.');
       return state.graph;
+    }
+
+    function hashString(value){let h=2166136261;for(let i=0;i<value.length;i++){h^=value.charCodeAt(i);h=Math.imul(h,16777619);}return (h>>>0).toString(36);}
+    function openMapCache(){
+      if(!('indexedDB' in window))return Promise.resolve(null);
+      if(!mapCachePromise)mapCachePromise=new Promise(resolve=>{const request=indexedDB.open('activ-map-cache',CACHE_VERSION);request.onupgradeneeded=()=>request.result.createObjectStore('responses',{keyPath:'key'});request.onsuccess=()=>resolve(request.result);request.onerror=()=>{console.warn('Map cache unavailable:',request.error);resolve(null);};});
+      return mapCachePromise;
+    }
+    const idbRequest=request=>new Promise((resolve,reject)=>{request.onsuccess=()=>resolve(request.result);request.onerror=()=>reject(request.error);});
+    const idbDone=tx=>new Promise((resolve,reject)=>{tx.oncomplete=resolve;tx.onerror=()=>reject(tx.error);tx.onabort=()=>reject(tx.error);});
+    async function readCache(key){
+      try{const db=await openMapCache();if(!db)return null;const item=await idbRequest(db.transaction('responses').objectStore('responses').get(key));if(!item)return null;if(!item.ts||Date.now()-item.ts>CACHE_TTL||!item.data?.elements){await deleteCache(key);return null;}return item.data;}catch(err){console.warn('Map cache read failed:',err);return null;}
+    }
+    async function deleteCache(key){const db=await openMapCache();if(!db)return;const tx=db.transaction('responses','readwrite');tx.objectStore('responses').delete(key);await idbDone(tx);}
+    async function writeCache(key,data){
+      try{
+        const db=await openMapCache();if(!db)return;let tx=db.transaction('responses','readwrite');tx.objectStore('responses').put({key,ts:Date.now(),data});await idbDone(tx);
+        const entries=await idbRequest(db.transaction('responses').objectStore('responses').getAll());
+        for(const item of entries.sort((a,b)=>b.ts-a.ts).slice(MAX_CACHE_ENTRIES))await deleteCache(item.key);
+      }catch(err){console.warn('Map cache write skipped:',err);}
+    }
+    async function fetchOverpassCached(query,kind,options={}){
+      const key=CACHE_PREFIX+kind+':'+hashString(query),cached=await readCache(key);
+      if(cached){state.cacheSource=`browser cache (${kind})`;return cached;}
+      const data=await fetchOverpass(query,options);await writeCache(key,data);state.cacheSource=`live Overpass (${kind})`;return data;
     }
 
     function fetchOverpass(query,options={}) {
@@ -343,6 +388,29 @@
     }
     class MinHeap { constructor(){this.a=[];} get size(){return this.a.length;} push(x){let i=this.a.push(x)-1;while(i){let p=(i-1)>>1;if(this.a[p][0]<=x[0])break;this.a[i]=this.a[p];i=p;}this.a[i]=x;} pop(){const root=this.a[0],last=this.a.pop();if(this.a.length){let i=0;this.a[0]=last;while(true){let l=i*2+1,r=l+1,s=i;if(l<this.a.length&&this.a[l][0]<this.a[s][0])s=l;if(r<this.a.length&&this.a[r][0]<this.a[s][0])s=r;if(s===i)break;[this.a[i],this.a[s]]=[this.a[s],this.a[i]];i=s;}}return root;} }
     function drawRoute(coords){ if(state.routeLayer)map.removeLayer(state.routeLayer);state.routeLayer=L.polyline(coords,{color:'#126b49',weight:7,opacity:.95,lineCap:'round',lineJoin:'round'}).addTo(map);state.routeLayer.bindTooltip('Your running loop');map.fitBounds(state.routeLayer.getBounds(),{padding:[45,45]});document.querySelector('.map-hint').style.display='none'; }
+
+    function makeQaFixture(lat=-34.593,lon=-58.38){
+      const elements=[],ids=[],size=17,step=.001;
+      for(let y=0;y<size;y++){ids[y]=[];for(let x=0;x<size;x++){const id=10000+y*size+x,p={type:'node',id,lat:lat+(y-8)*step,lon:lon+(x-8)*step};ids[y][x]=id;elements.push(p);}}
+      let wayId=20000;
+      for(let y=0;y<size;y++)elements.push({type:'way',id:wayId++,nodes:ids[y],geometry:ids[y].map(id=>{const p=elements[id-10000];return {lat:p.lat,lon:p.lon};}),tags:{highway:y%4===0?'tertiary':'residential',sidewalk:'yes'}});
+      for(let x=0;x<size;x++){const col=ids.map(row=>row[x]);elements.push({type:'way',id:wayId++,nodes:col,geometry:col.map(id=>{const p=elements[id-10000];return {lat:p.lat,lon:p.lon};}),tags:{highway:x%3===0?'footway':'residential'}});}
+      for(const [y,x] of [[8,8],[4,8],[12,8]]){const p=elements[ids[y][x]-10000];p.tags={crossing:'marked'};}
+      const parkIds=[ids[5][5],ids[5][11],ids[11][11],ids[11][5],ids[5][5]];
+      elements.push({type:'way',id:wayId++,nodes:parkIds,geometry:parkIds.map(id=>{const p=elements[id-10000];return {lat:p.lat,lon:p.lon};}),tags:{leisure:'park'}});
+      return elements;
+    }
+    async function runQaSuite(){
+      const started=performance.now(),origin={lat:-34.593,lon:-58.38};state.location=origin;state.cacheSource='built-in fixture (no network)';
+      const fixtureStart=performance.now(),graph=buildGraph(makeQaFixture(origin.lat,origin.lon));state.timings['fixture graph']=Math.round(performance.now()-fixtureStart);
+      const cacheKey=CACHE_PREFIX+'qa-smoke',cacheData={elements:[{type:'node',id:1,lat:origin.lat,lon:origin.lon}]};await writeCache(cacheKey,cacheData);const cachePass=(await readCache(cacheKey))?.elements?.[0]?.id===1;await deleteCache(cacheKey);
+      const target=3*M_PER_MI,checks={};
+      for(const preset of ['balanced','nature','nostops','scenic']){const t=performance.now(),route=findLoop(graph,target,preset),error=route?Math.abs(route.distance-target)/target:1;checks[preset]={pass:!!route&&error<=.2&&route.coords.length>2,errorPct:Math.round(error*100),distanceMi:route?Number((route.distance/M_PER_MI).toFixed(2)):null,repeatedPct:route?Math.round(route.stats.repeatedMeters/route.distance*100):null,ms:Math.round(performance.now()-t)};}
+      const pass=cachePass&&Object.values(checks).every(x=>x.pass);state.timings['QA total']=Math.round(performance.now()-started);window.__ACTIV_QA__={pass,cachePass,checks,nodeCount:graph.nodes.size,timings:{...state.timings}};
+      status(pass?'Fast routing and cache checks passed.':'One or more fast checks failed.',!pass);renderTimings(`cache: ${cachePass?'PASS':'FAIL'}\n`+Object.entries(checks).map(([p,x])=>`${p}: ${x.pass?'PASS':'FAIL'} · ${x.distanceMi??'—'} mi · ${x.ms} ms`).join('\n'));
+      document.title=`${pass?'PASS':'FAIL'} — activ QA`;
+    }
+    if(testParams.get('qa')==='1')setTimeout(runQaSuite,0);
   </script>
 </body>
 </html>
