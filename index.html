@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#f5f3ec">
-  <title>Run Smart — route generator</title>
+  <title>activ — running route generator</title>
   <link rel="preconnect" href="https://unpkg.com">
   <link rel="preconnect" href="https://tile.openstreetmap.org">
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="">
@@ -41,6 +41,10 @@
     .miles { font-family:Georgia,serif; font-size:36px; line-height:1; }
     .miles small { font-family:inherit; font-size:16px; color:var(--muted); }
     .match { text-align:right; color:var(--muted); font-size:12px; }
+    .stats { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; margin-top:15px; padding-top:14px; border-top:1px solid var(--line); }
+    .stat { min-width:0; }
+    .stat strong { display:block; font-size:14px; }
+    .stat span { display:block; margin-top:3px; color:var(--muted); font-size:10px; text-transform:uppercase; letter-spacing:.06em; }
     .map-wrap { position:relative; min-height:420px; }
     #map { position:absolute; inset:0; background:#dfe5dc; }
     .map-hint { position:absolute; z-index:450; top:20px; left:50%; transform:translateX(-50%); padding:10px 14px; border-radius:999px; background:rgba(255,254,249,.92); box-shadow:0 5px 20px rgba(0,0,0,.08); font-size:12px; color:var(--muted); pointer-events:none; white-space:nowrap; }
@@ -52,7 +56,7 @@
 <body>
   <main class="shell">
     <section class="panel">
-      <div class="brand"><span class="logo">↗</span> Run Smart</div>
+      <div class="brand"><span class="logo">↗</span> activ</div>
       <h1>A better loop starts here.</h1>
       <p class="intro">Pick your distance and what matters today. We’ll find a runnable loop from your doorstep.</p>
 
@@ -75,6 +79,11 @@
       <div id="status" class="status" role="status" aria-live="polite"></div>
       <div id="result" class="result">
         <div class="result-row"><div class="miles"><span id="actual">—</span> <small>mi</small></div><div id="match" class="match"></div></div>
+        <div class="stats">
+          <div class="stat"><strong id="greenStat">—</strong><span>Green route</span></div>
+          <div class="stat"><strong id="crossingStat">—</strong><span>Crossings</span></div>
+          <div class="stat"><strong id="repeatStat">—</strong><span>Repeated</span></div>
+        </div>
       </div>
     </section>
     <section class="map-wrap">
@@ -107,6 +116,15 @@
     $('preset').addEventListener('change', e => $('presetNote').textContent = presetCopy[e.target.value]);
     $('locate').addEventListener('click', locate);
     $('generate').addEventListener('click', generate);
+    // Deterministic QA hook. Supplying ?testLat=...&testLon=... bypasses
+    // geolocation prompts without adding controls to the production UI.
+    const testParams=new URLSearchParams(location.search),testLat=Number(testParams.get('testLat')),testLon=Number(testParams.get('testLon'));
+    if(testParams.has('testLat')&&testParams.has('testLon')&&Number.isFinite(testLat)&&Number.isFinite(testLon)){
+      state.location={lat:testLat,lon:testLon};$('generate').disabled=false;
+      $('locate').classList.add('ready');$('locate').innerHTML='<span>✓</span><span>Test location ready</span>';
+      $('coords').textContent=`${testLat.toFixed(4)}, ${testLon.toFixed(4)} · test coordinates`;
+      state.marker=L.marker([testLat,testLon],{icon:L.divIcon({className:'start-marker',html:''})}).addTo(map);map.setView([testLat,testLon],15);
+    }
 
     function status(message, error=false) {
       $('status').textContent = message;
@@ -150,6 +168,9 @@
         const delta=Math.round(Math.abs(actual-miles)/miles*100);
         $('actual').textContent=actual.toFixed(2);
         $('match').innerHTML=delta<=15?`${presetLabel()}<br>within ${delta}% of target`:`${presetLabel()}<br>${delta}% from target`;
+        $('greenStat').textContent=`${Math.round(result.stats.greenMeters/result.distance*100)}%`;
+        $('crossingStat').textContent=String(result.stats.crossingSegments);
+        $('repeatStat').textContent=`${Math.round(result.stats.repeatedMeters/result.distance*100)}%`;
         $('result').className='result show';
         status(delta<=15?'Loop ready. Have a great run.':'Closest loop found — actual distance shown below.');
       } catch(err) { console.error(err); status(err.message||'Something went wrong while generating the route.',true); }
@@ -238,11 +259,12 @@
         const mid={lat:(a.lat+b.lat)/2,lon:(a.lon+b.lon)/2};
         const cy=Math.floor(mid.lat/cell),cx=Math.floor(mid.lon/cell);let nearbyCrossings=[];
         for(let y=cy-1;y<=cy+1;y++)for(let x=cx-1;x<=cx+1;x++)nearbyCrossings.push(...(crossGrid.get(`${y},${x}`)||[]));
-        const nearCross=nearbyCrossings.some(c=>haversine(mid,c)<35);
+        const crossingIds=nearbyCrossings.filter(c=>haversine(mid,c)<35).map(c=>c.id),nearCross=crossingIds.length>0;
         let green=false,water=false;
         for(const area of indexedAreas) { const pad=.0005;if(mid.lat<area.minLat-pad||mid.lat>area.maxLat+pad||mid.lon<area.minLon-pad||mid.lon>area.maxLon+pad)continue;if(featureNear(mid,area.points,area.kind==='water'?45:25)){if(area.kind==='water')water=true;else green=true;} }
         const climb=Number.isFinite(a.ele)&&Number.isFinite(b.ele)?Math.abs(a.ele-b.ele):0;
-        const meta={distance,key,nearCross,green,water,climb,highway:(way.tags||{}).highway};
+        const tags=way.tags||{};
+        const meta={distance,key,nearCross,crossingIds,green,water,climb,highway:tags.highway,surface:tags.surface||'',sidewalk:tags.sidewalk||'',lit:tags.lit||''};
         addEdge(a,b,meta); addEdge(b,a,meta);
       }
       return {nodes,adj};
@@ -268,27 +290,56 @@
       const start=nearestNode(graph,state.location); if(!start)return null;
       let radius=target/(2*Math.PI), best=null;
       for(let attempt=0;attempt<3;attempt++) {
-        const rotation=28+attempt*17, count=4;
-        const waypoints=[start];
-        for(let i=0;i<count;i++) waypoints.push(nearestNode(graph,destination(state.location,radius,rotation+i*360/count)));
-        waypoints.push(start);
-        const used=new Set(), ids=[]; let total=0,ok=true;
-        for(let i=1;i<waypoints.length;i++) {
-          if(!waypoints[i-1]||!waypoints[i]||waypoints[i-1].id===waypoints[i].id)continue;
-          const path=dijkstra(graph,waypoints[i-1].id,waypoints[i].id,preset,used);
-          if(!path){ok=false;break;}
-          if(ids.length)path.ids.shift(); ids.push(...path.ids); total+=path.distance; path.edges.forEach(e=>used.add(e));
+        let ringBest=null;
+        for(const rotation of [12,35,58,81]) {
+          const candidate=buildCandidate(graph,start,target,radius,rotation+attempt*9,preset);
+          if(candidate&&(!ringBest||candidate.score<ringBest.score))ringBest=candidate;
+          if(candidate&&(!best||candidate.score<best.score))best=candidate;
         }
-        if(ok&&ids.length>2){const candidate={coords:ids.map(id=>[graph.nodes.get(id).lat,graph.nodes.get(id).lon]),distance:total}; if(!best||Math.abs(total-target)<Math.abs(best.distance-target))best=candidate; if(Math.abs(total-target)/target<=.15)break; radius*=Math.max(.65,Math.min(1.5,target/total));}
-        else radius*=.78;
+        if(ringBest){
+          const error=Math.abs(ringBest.distance-target)/target,repeat=ringBest.stats.repeatedMeters/ringBest.distance;
+          if(error<=.12&&repeat<=.16)break;
+          radius*=Math.max(.7,Math.min(1.38,target/ringBest.distance));
+        } else radius*=.78;
       }
       return best;
     }
-    function edgeCost(e,preset,reused){ let factor=1; if(preset==='nature'&&e.green)factor*=.48; if(preset==='nostops'&&e.nearCross)factor*=4.2; if(preset==='scenic'){if(e.green)factor*=.62;if(e.water)factor*=.58;if(e.climb>1)factor*=.88;} if(preset==='balanced'&&e.green)factor*=.9; if(e.highway==='steps')factor*=1.45; if(reused)factor*=6; return Math.max(e.distance*.22,e.distance*factor); }
+    function buildCandidate(graph,start,target,radius,rotation,preset){
+      const count=4,waypoints=[start];
+      for(let i=0;i<count;i++)waypoints.push(nearestNode(graph,destination(state.location,radius,rotation+i*360/count)));
+      waypoints.push(start);
+      const used=new Set(),ids=[],metas=[];let total=0,repeatedMeters=0;
+      for(let i=1;i<waypoints.length;i++){
+        if(!waypoints[i-1]||!waypoints[i]||waypoints[i-1].id===waypoints[i].id)continue;
+        const path=dijkstra(graph,waypoints[i-1].id,waypoints[i].id,preset,used);if(!path)return null;
+        if(ids.length)path.ids.shift();ids.push(...path.ids);total+=path.distance;
+        for(const edge of path.edgeMetas){if(used.has(edge.key))repeatedMeters+=edge.distance;used.add(edge.key);metas.push(edge);}
+      }
+      if(ids.length<3||!total)return null;
+      const greenMeters=metas.reduce((sum,e)=>sum+(e.green?e.distance:0),0);
+      const crossingSegments=new Set(metas.flatMap(e=>e.crossingIds||[])).size;
+      const error=Math.abs(total-target)/target,repeatRatio=repeatedMeters/total;
+      return {coords:ids.map(id=>[graph.nodes.get(id).lat,graph.nodes.get(id).lon]),distance:total,score:error*5+repeatRatio*4,stats:{greenMeters,crossingSegments,repeatedMeters}};
+    }
+    function edgeCost(e,preset,reused){
+      let factor=1;
+      if(e.highway==='secondary')factor*=e.sidewalk&&e.sidewalk!=='no'?1.55:2.8;
+      else if(e.highway==='tertiary')factor*=e.sidewalk&&e.sidewalk!=='no'?1.15:1.5;
+      else if(e.highway==='service')factor*=1.12;
+      else if(e.highway==='steps')factor*=1.65;
+      if(['footway','path','pedestrian','living_street'].includes(e.highway))factor*=.88;
+      if(e.surface==='cobblestone'||e.surface==='sett')factor*=1.2;
+      if(e.nearCross)factor*=preset==='nostops'?6:1.12;
+      if(preset==='nature'){if(e.green)factor*=.4;if(e.highway==='path'||e.highway==='footway')factor*=.78;}
+      if(preset==='scenic'){if(e.green)factor*=.55;if(e.water)factor*=.48;if(e.climb>1)factor*=.86;if(e.highway==='path'||e.highway==='footway')factor*=.86;}
+      if(preset==='balanced'&&e.green)factor*=.88;
+      if(reused)factor*=12;
+      return Math.max(e.distance*.2,e.distance*factor);
+    }
     function dijkstra(graph,start,goal,preset,used) {
       const dist=new Map([[start,0]]), prev=new Map(), heap=new MinHeap(); heap.push([0,start]);
       while(heap.size){const [cost,id]=heap.pop();if(cost!==dist.get(id))continue;if(id===goal)break;for(const e of graph.adj.get(id)||[]){const nc=cost+edgeCost(e,preset,used.has(e.key));if(nc<(dist.get(e.to)??Infinity)){dist.set(e.to,nc);prev.set(e.to,{id,edge:e});heap.push([nc,e.to]);}}}
-      if(!prev.has(goal))return null; const ids=[goal],edges=[],edgeKeys=[];let cur=goal,actual=0;while(cur!==start){const p=prev.get(cur);if(!p)return null;actual+=p.edge.distance;edgeKeys.push(p.edge.key);edges.push(p.edge);cur=p.id;ids.push(cur);} ids.reverse(); return {ids,distance:actual,edges:edgeKeys};
+      if(!prev.has(goal))return null;const ids=[goal],edgeMetas=[];let cur=goal,actual=0;while(cur!==start){const p=prev.get(cur);if(!p)return null;actual+=p.edge.distance;edgeMetas.push(p.edge);cur=p.id;ids.push(cur);}ids.reverse();edgeMetas.reverse();return {ids,distance:actual,edgeMetas};
     }
     class MinHeap { constructor(){this.a=[];} get size(){return this.a.length;} push(x){let i=this.a.push(x)-1;while(i){let p=(i-1)>>1;if(this.a[p][0]<=x[0])break;this.a[i]=this.a[p];i=p;}this.a[i]=x;} pop(){const root=this.a[0],last=this.a.pop();if(this.a.length){let i=0;this.a[0]=last;while(true){let l=i*2+1,r=l+1,s=i;if(l<this.a.length&&this.a[l][0]<this.a[s][0])s=l;if(r<this.a.length&&this.a[r][0]<this.a[s][0])s=r;if(s===i)break;[this.a[i],this.a[s]]=[this.a[s],this.a[i]];i=s;}}return root;} }
     function drawRoute(coords){ if(state.routeLayer)map.removeLayer(state.routeLayer);state.routeLayer=L.polyline(coords,{color:'#126b49',weight:7,opacity:.95,lineCap:'round',lineJoin:'round'}).addTo(map);state.routeLayer.bindTooltip('Your running loop');map.fitBounds(state.routeLayer.getBounds(),{padding:[45,45]});document.querySelector('.map-hint').style.display='none'; }
