@@ -99,14 +99,7 @@
   <script>
     'use strict';
     const M_PER_MI = 1609.344;
-    const CACHE_VERSION = 1, CACHE_PREFIX = `activ-map-v${CACHE_VERSION}:`, CACHE_TTL = 7*24*60*60*1000, MAX_CACHE_ENTRIES = 6;
-    let mapCachePromise;
-    const OVERPASS_ENDPOINTS = [
-      'https://lz4.overpass-api.de/api/interpreter',
-      'https://z.overpass-api.de/api/interpreter',
-      'https://overpass.private.coffee/api/interpreter'
-    ];
-    const state = { location:null, graph:null, features:null, routeLayer:null, marker:null, dataKey:'', timings:{}, cacheSource:'' };
+    const state = { location:null, routeLayer:null, marker:null, timings:{}, cacheSource:'' };
     const $ = id => document.getElementById(id);
     const map = L.map('map', { zoomControl:false }).setView([40, -98], 4);
     L.control.zoom({position:'bottomright'}).addTo(map);
@@ -171,32 +164,27 @@
       $('generate').disabled=true; $('result').className='result';
       try {
         state.timings={}; const totalStart=performance.now();
-        const target=miles*M_PER_MI;
-        status('Loading nearby paths, parks, and crossings…');
+        status('Asking the activ server to build your loop…');
         const loadStart=performance.now();
-        const data=await loadNetwork(target);
-        mark('load map + graph',loadStart);
-        status(`Building a loop from ${data.nodes.size.toLocaleString()} map points…`);
-        await tick();
-        const routeStart=performance.now();
-        const result=findLoop(data,target,$('preset').value);
-        mark('route search',routeStart);
-        if (!result || result.coords.length<2) throw new Error('No connected loop could be built here. Try a shorter distance or move the map to an area with more mapped paths.');
-        drawRoute(result.coords);
-        const actual=result.distance/M_PER_MI;
+        const response=await fetch('/api/routes',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({latitude:state.location.lat,longitude:state.location.lon,distanceMiles:miles,preset:$('preset').value})});
+        const result=await response.json();
+        if(!response.ok)throw new Error(result.error||'The activ server could not generate a route.');
+        mark('server request',loadStart);state.cacheSource=result.meta?.mapSource||'server';
+        if (!result.coordinates || result.coordinates.length<2) throw new Error('The server returned an incomplete route.');
+        drawRoute(result.coordinates);
+        const actual=result.distanceMiles;
         const delta=Math.round(Math.abs(actual-miles)/miles*100);
         $('actual').textContent=actual.toFixed(2);
         $('match').innerHTML=delta<=15?`${presetLabel()}<br>within ${delta}% of target`:`${presetLabel()}<br>${delta}% from target`;
-        $('greenStat').textContent=`${Math.round(result.stats.greenMeters/result.distance*100)}%`;
-        $('crossingStat').textContent=String(result.stats.crossingSegments);
-        $('repeatStat').textContent=`${Math.round(result.stats.repeatedMeters/result.distance*100)}%`;
+        $('greenStat').textContent=`${result.stats.greenPercent}%`;
+        $('crossingStat').textContent=String(result.stats.crossings);
+        $('repeatStat').textContent=`${result.stats.repeatedPercent}%`;
         $('result').className='result show';
         status(delta<=15?'Loop ready. Have a great run.':'Closest loop found — actual distance shown below.');
         mark('total',totalStart);
       } catch(err) { console.error(err); status(err.message||'Something went wrong while generating the route.',true); }
       finally { $('generate').disabled=false; }
     }
-    const tick=()=>new Promise(r=>setTimeout(r,20));
     const presetLabel=()=>$('preset').options[$('preset').selectedIndex].text;
 
     function bboxFor(target) {
