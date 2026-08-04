@@ -1,0 +1,297 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#f5f3ec">
+  <title>Run Smart — route generator</title>
+  <link rel="preconnect" href="https://unpkg.com">
+  <link rel="preconnect" href="https://tile.openstreetmap.org">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="">
+  <style>
+    :root { --ink:#17251d; --muted:#68736c; --paper:#f5f3ec; --card:#fffef9; --green:#126b49; --lime:#c8f06b; --line:#dce1da; --shadow:0 18px 55px rgba(21,44,31,.13); }
+    * { box-sizing:border-box; }
+    html, body { height:100%; margin:0; }
+    body { font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; color:var(--ink); background:var(--paper); }
+    button, input, select { font:inherit; }
+    .shell { height:100%; display:grid; grid-template-columns:minmax(300px,390px) 1fr; }
+    .panel { position:relative; z-index:500; padding:30px; overflow:auto; background:rgba(245,243,236,.96); border-right:1px solid rgba(23,37,29,.08); }
+    .brand { display:flex; align-items:center; gap:11px; font-weight:800; letter-spacing:-.03em; font-size:20px; }
+    .logo { width:34px; height:34px; display:grid; place-items:center; border-radius:50%; background:var(--ink); color:var(--lime); }
+    h1 { margin:44px 0 10px; max-width:320px; font-family:Georgia,serif; font-size:43px; line-height:.98; letter-spacing:-.045em; font-weight:500; }
+    .intro { color:var(--muted); line-height:1.55; margin:0 0 28px; }
+    .location { width:100%; border:0; border-radius:15px; padding:15px 17px; background:var(--ink); color:white; font-weight:750; cursor:pointer; display:flex; justify-content:center; gap:9px; transition:.2s; }
+    .location:hover { transform:translateY(-1px); background:#223d2e; }
+    .location:disabled, .generate:disabled { cursor:not-allowed; opacity:.58; transform:none; }
+    .location.ready { background:#e5eddf; color:var(--green); }
+    .coords { min-height:20px; margin:9px 2px 19px; font-size:12px; color:var(--muted); text-align:center; }
+    label { display:block; margin:18px 0 8px; font-size:12px; font-weight:800; text-transform:uppercase; letter-spacing:.09em; }
+    .distance-wrap { display:flex; align-items:center; overflow:hidden; border:1px solid var(--line); background:var(--card); border-radius:14px; }
+    .distance-wrap input { width:100%; border:0; outline:0; padding:14px 16px; color:var(--ink); background:transparent; font-weight:750; }
+    .unit { padding-right:16px; color:var(--muted); font-size:13px; }
+    select { width:100%; border:1px solid var(--line); outline:0; border-radius:14px; padding:14px 40px 14px 16px; color:var(--ink); background:var(--card); font-weight:700; }
+    .preset-note { margin:8px 2px 0; color:var(--muted); font-size:12px; line-height:1.4; }
+    .generate { width:100%; margin-top:25px; border:0; border-radius:15px; padding:16px; background:var(--green); color:white; font-weight:800; cursor:pointer; box-shadow:0 10px 25px rgba(18,107,73,.2); }
+    .status { display:none; margin-top:16px; padding:13px 14px; border-radius:13px; background:#ebe9df; font-size:13px; line-height:1.45; }
+    .status.show { display:block; }
+    .status.error { background:#f7e5df; color:#8a301e; }
+    .result { display:none; margin-top:16px; padding:17px; border:1px solid var(--line); border-radius:16px; background:var(--card); }
+    .result.show { display:block; }
+    .result-row { display:flex; align-items:end; justify-content:space-between; gap:15px; }
+    .miles { font-family:Georgia,serif; font-size:36px; line-height:1; }
+    .miles small { font-family:inherit; font-size:16px; color:var(--muted); }
+    .match { text-align:right; color:var(--muted); font-size:12px; }
+    .map-wrap { position:relative; min-height:420px; }
+    #map { position:absolute; inset:0; background:#dfe5dc; }
+    .map-hint { position:absolute; z-index:450; top:20px; left:50%; transform:translateX(-50%); padding:10px 14px; border-radius:999px; background:rgba(255,254,249,.92); box-shadow:0 5px 20px rgba(0,0,0,.08); font-size:12px; color:var(--muted); pointer-events:none; white-space:nowrap; }
+    .start-marker { width:22px!important; height:22px!important; margin:-11px!important; border:5px solid white; border-radius:50%; background:var(--green); box-shadow:0 2px 10px rgba(0,0,0,.3); }
+    .leaflet-control-attribution { font-size:10px; }
+    @media (max-width:760px) { .shell{display:flex; flex-direction:column;} .panel{padding:22px 20px; border:0;} h1{margin-top:25px;font-size:37px;} .map-wrap{min-height:52vh; flex:1;} }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <section class="panel">
+      <div class="brand"><span class="logo">↗</span> Run Smart</div>
+      <h1>A better loop starts here.</h1>
+      <p class="intro">Pick your distance and what matters today. We’ll find a runnable loop from your doorstep.</p>
+
+      <button id="locate" class="location"><span>◎</span><span>Use my location</span></button>
+      <div id="coords" class="coords">Your location stays in this browser.</div>
+
+      <label for="distance">Distance</label>
+      <div class="distance-wrap"><input id="distance" type="number" value="3" min="0.5" max="20" step="0.5" inputmode="decimal"><span class="unit">miles</span></div>
+
+      <label for="preset">Route style</label>
+      <select id="preset">
+        <option value="balanced">Balanced</option>
+        <option value="nature">Nature Loop</option>
+        <option value="nostops">No Stops</option>
+        <option value="scenic">Scenic</option>
+      </select>
+      <p id="presetNote" class="preset-note">A practical mix of direct streets and pleasant paths.</p>
+
+      <button id="generate" class="generate" disabled>Generate my loop</button>
+      <div id="status" class="status" role="status" aria-live="polite"></div>
+      <div id="result" class="result">
+        <div class="result-row"><div class="miles"><span id="actual">—</span> <small>mi</small></div><div id="match" class="match"></div></div>
+      </div>
+    </section>
+    <section class="map-wrap">
+      <div class="map-hint">Your route will appear here</div>
+      <div id="map" aria-label="Running route map"></div>
+    </section>
+  </main>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+  <script>
+    'use strict';
+    const M_PER_MI = 1609.344;
+    const OVERPASS_ENDPOINTS = [
+      'https://lz4.overpass-api.de/api/interpreter',
+      'https://z.overpass-api.de/api/interpreter',
+      'https://overpass.private.coffee/api/interpreter'
+    ];
+    const state = { location:null, graph:null, features:null, routeLayer:null, marker:null, dataKey:'' };
+    const $ = id => document.getElementById(id);
+    const map = L.map('map', { zoomControl:false }).setView([40, -98], 4);
+    L.control.zoom({position:'bottomright'}).addTo(map);
+    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom:19, attribution:'&copy; OpenStreetMap contributors' }).addTo(map);
+
+    const presetCopy = {
+      balanced:'A practical mix of direct streets and pleasant paths.',
+      nature:'Prefers paths through parks, gardens, and forests.',
+      nostops:'Avoids traffic signals and marked crossings where possible.',
+      scenic:'Seeks greenery, water, and varied terrain when mapped.'
+    };
+    $('preset').addEventListener('change', e => $('presetNote').textContent = presetCopy[e.target.value]);
+    $('locate').addEventListener('click', locate);
+    $('generate').addEventListener('click', generate);
+
+    function status(message, error=false) {
+      $('status').textContent = message;
+      $('status').className = 'status show' + (error ? ' error' : '');
+    }
+    function clearStatus(){ $('status').className='status'; }
+    function locate() {
+      if (!navigator.geolocation) return status('This browser does not support location sharing.', true);
+      $('locate').disabled=true; $('locate').innerHTML='<span>◌</span><span>Finding you…</span>'; clearStatus();
+      navigator.geolocation.getCurrentPosition(pos => {
+        const {latitude:lat, longitude:lon} = pos.coords;
+        state.location={lat,lon};
+        $('locate').disabled=false; $('locate').classList.add('ready'); $('locate').innerHTML='<span>✓</span><span>Location ready</span>';
+        $('coords').textContent=`${lat.toFixed(4)}, ${lon.toFixed(4)} · accuracy ±${Math.round(pos.coords.accuracy)} m`;
+        $('generate').disabled=false;
+        if (state.marker) map.removeLayer(state.marker);
+        state.marker=L.marker([lat,lon],{icon:L.divIcon({className:'start-marker',html:''})}).addTo(map).bindTooltip('Start / finish');
+        map.setView([lat,lon],15); clearStatus();
+      }, err => {
+        $('locate').disabled=false; $('locate').innerHTML='<span>◎</span><span>Try location again</span>';
+        const msg=err.code===1?'Location access was denied. Enable it in your browser settings and try again.':'We could not get your location. Check your connection and try again.';
+        status(msg,true);
+      }, {enableHighAccuracy:true,timeout:12000,maximumAge:60000});
+    }
+
+    async function generate() {
+      if (!state.location) return status('Share your location first.',true);
+      const miles=Number($('distance').value);
+      if (!Number.isFinite(miles)||miles<.5||miles>20) return status('Choose a distance from 0.5 to 20 miles.',true);
+      $('generate').disabled=true; $('result').className='result';
+      try {
+        const target=miles*M_PER_MI;
+        status('Loading nearby paths, parks, and crossings…');
+        const data=await loadNetwork(target);
+        status(`Building a loop from ${data.nodes.size.toLocaleString()} map points…`);
+        await tick();
+        const result=findLoop(data,target,$('preset').value);
+        if (!result || result.coords.length<2) throw new Error('No connected loop could be built here. Try a shorter distance or move the map to an area with more mapped paths.');
+        drawRoute(result.coords);
+        const actual=result.distance/M_PER_MI;
+        const delta=Math.round(Math.abs(actual-miles)/miles*100);
+        $('actual').textContent=actual.toFixed(2);
+        $('match').innerHTML=delta<=15?`${presetLabel()}<br>within ${delta}% of target`:`${presetLabel()}<br>${delta}% from target`;
+        $('result').className='result show';
+        status(delta<=15?'Loop ready. Have a great run.':'Closest loop found — actual distance shown below.');
+      } catch(err) { console.error(err); status(err.message||'Something went wrong while generating the route.',true); }
+      finally { $('generate').disabled=false; }
+    }
+    const tick=()=>new Promise(r=>setTimeout(r,20));
+    const presetLabel=()=>$('preset').options[$('preset').selectedIndex].text;
+
+    function bboxFor(target) {
+      // A compact box is dramatically faster in dense cities and still leaves
+      // enough margin around the ideal loop radius for route adjustments.
+      const radius=Math.max(700,target/(2*Math.PI)*1.12);
+      const lat=state.location.lat, lon=state.location.lon;
+      const dLat=radius/111320, dLon=radius/(111320*Math.max(.2,Math.cos(lat*Math.PI/180)));
+      return {s:lat-dLat,w:lon-dLon,n:lat+dLat,e:lon+dLon,radius};
+    }
+    async function loadNetwork(target) {
+      const b=bboxFor(target), key=[b.s,b.w,b.n,b.e].map(x=>x.toFixed(3)).join(',');
+      if(state.graph&&state.dataKey===key) return state.graph;
+      const box=`${b.s},${b.w},${b.n},${b.e}`;
+      // Keep the route-critical road query small. Scenery and crossing data is
+      // fetched independently; a slow enrichment must never prevent a route.
+      const roadQuery=`[out:json][timeout:22];way[highway~"^(footway|path|residential|living_street|pedestrian|tertiary|secondary|unclassified|service|track|steps)$"][foot!="no"][access!="private"](${box});out geom;`;
+      const featureQuery=`[out:json][timeout:12];(way[leisure~"^(park|garden)$"](${box});way[landuse="forest"](${box});way[natural="water"](${box});way[waterway~"^(river|stream|canal)$"](${box});node[highway="traffic_signals"](${box});node[crossing](${box}););out geom;`;
+      const enrichment=fetchOverpass(featureQuery,{timeout:12000,quiet:true}).catch(err=>{console.warn('Optional map enrichment unavailable:',err.message);return null;});
+      const roadJson=await fetchOverpass(roadQuery);
+      let elements=roadJson.elements;
+      status('Roads loaded — checking parks and crossings…');
+      const featureJson=await Promise.race([enrichment,new Promise(resolve=>setTimeout(()=>resolve(null),2500))]);
+      if(featureJson)elements=elements.concat(featureJson.elements);
+      state.graph=buildGraph(elements); state.dataKey=key;
+      if(state.graph.nodes.size<10) throw new Error('Not enough runnable paths were found near this location.');
+      return state.graph;
+    }
+
+    function fetchOverpass(query,options={}) {
+      // Start backups shortly after the primary instead of waiting up to 30s
+      // for each one in sequence. The first valid response wins.
+      return new Promise((resolve,reject)=>{
+        const controllers=[], failures=[]; let finished=0, settled=false;
+        OVERPASS_ENDPOINTS.forEach((endpoint,i)=>setTimeout(async()=>{
+          if(settled)return;
+          if(i===1&&!options.quiet)status('The first map server is slow — trying alternate capacity…');
+          if(i===2&&!options.quiet)status('The standard servers are busy — trying an independent backup…');
+          const controller=new AbortController(); controllers.push(controller);
+          const timer=setTimeout(()=>controller.abort(),options.timeout||30000);
+          try {
+            // Form-encoded POST is the transport documented by Overpass. GET
+            // requests are rejected with HTTP 406 by the standard instance.
+            const response=await fetch(endpoint,{method:'POST',mode:'cors',cache:'no-store',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'data='+encodeURIComponent(query),signal:controller.signal});
+            if(!response.ok)throw new Error(`HTTP ${response.status}`);
+            const json=await response.json();
+            if(!json.elements)throw new Error('invalid response');
+            if(!settled){settled=true;controllers.forEach(c=>c!==controller&&c.abort());resolve(json);}
+          } catch(err) {
+            failures[i]=err.name==='AbortError'?'timed out':err.message;
+            finished++;
+            if(finished===OVERPASS_ENDPOINTS.length&&!settled){console.warn('Overpass attempts failed:',failures);reject(new Error(`Could not load map data (${failures.join('; ')}).`));}
+          } finally {clearTimeout(timer);}
+        },i*1500));
+      });
+    }
+
+    function buildGraph(elements) {
+      const allNodes=new Map(), roadWays=[], areas=[], crossings=[];
+      for(const el of elements) if(el.type==='node'&&el.lat!=null) allNodes.set(el.id,{id:el.id,lat:el.lat,lon:el.lon,ele:Number(el.tags&&el.tags.ele)});
+      // Ways returned with `out geom` carry coordinates alongside their node IDs.
+      for(const el of elements)if(el.type==='way'&&el.nodes&&el.geometry)for(let i=0;i<el.nodes.length;i++){
+        const p=el.geometry[i];if(p&&!allNodes.has(el.nodes[i]))allNodes.set(el.nodes[i],{id:el.nodes[i],lat:p.lat,lon:p.lon,ele:NaN});
+      }
+      for(const el of elements) {
+        if(el.type==='node'&&el.tags&&(el.tags.crossing||el.tags.highway==='traffic_signals')) crossings.push(allNodes.get(el.id));
+        if(el.type!=='way'||!el.nodes) continue;
+        const t=el.tags||{};
+        if(t.highway) roadWays.push(el);
+        else if(t.leisure||t.landuse==='forest'||t.natural==='water'||t.waterway) areas.push({kind:(t.natural==='water'||t.waterway)?'water':'green', points:el.nodes.map(id=>allNodes.get(id)).filter(Boolean)});
+      }
+      const nodes=new Map(), adj=new Map();
+      const crossGrid=new Map(), cell=.001;
+      for(const c of crossings)if(c){const k=`${Math.floor(c.lat/cell)},${Math.floor(c.lon/cell)}`;(crossGrid.get(k)||crossGrid.set(k,[]).get(k)).push(c);}
+      const indexedAreas=areas.map(area=>({...area,minLat:Math.min(...area.points.map(p=>p.lat)),maxLat:Math.max(...area.points.map(p=>p.lat)),minLon:Math.min(...area.points.map(p=>p.lon)),maxLon:Math.max(...area.points.map(p=>p.lon))}));
+      const addEdge=(a,b,meta)=>{ if(!adj.has(a.id))adj.set(a.id,[]); adj.get(a.id).push({to:b.id,...meta}); };
+      for(const way of roadWays) for(let i=1;i<way.nodes.length;i++) {
+        const a=allNodes.get(way.nodes[i-1]), b=allNodes.get(way.nodes[i]); if(!a||!b)continue;
+        nodes.set(a.id,a); nodes.set(b.id,b); const distance=haversine(a,b); const key=a.id<b.id?`${a.id}-${b.id}`:`${b.id}-${a.id}`;
+        const mid={lat:(a.lat+b.lat)/2,lon:(a.lon+b.lon)/2};
+        const cy=Math.floor(mid.lat/cell),cx=Math.floor(mid.lon/cell);let nearbyCrossings=[];
+        for(let y=cy-1;y<=cy+1;y++)for(let x=cx-1;x<=cx+1;x++)nearbyCrossings.push(...(crossGrid.get(`${y},${x}`)||[]));
+        const nearCross=nearbyCrossings.some(c=>haversine(mid,c)<35);
+        let green=false,water=false;
+        for(const area of indexedAreas) { const pad=.0005;if(mid.lat<area.minLat-pad||mid.lat>area.maxLat+pad||mid.lon<area.minLon-pad||mid.lon>area.maxLon+pad)continue;if(featureNear(mid,area.points,area.kind==='water'?45:25)){if(area.kind==='water')water=true;else green=true;} }
+        const climb=Number.isFinite(a.ele)&&Number.isFinite(b.ele)?Math.abs(a.ele-b.ele):0;
+        const meta={distance,key,nearCross,green,water,climb,highway:(way.tags||{}).highway};
+        addEdge(a,b,meta); addEdge(b,a,meta);
+      }
+      return {nodes,adj};
+    }
+    function featureNear(p,pts,buffer) {
+      if(pts.length<2)return false;
+      if(pts.length>2&&pointInPolygon(p,pts))return true;
+      for(let i=1;i<pts.length;i++) if(pointSegmentDistance(p,pts[i-1],pts[i])<buffer)return true;
+      return false;
+    }
+    function pointInPolygon(p,poly){ let inside=false; for(let i=0,j=poly.length-1;i<poly.length;j=i++){const a=poly[i],b=poly[j];if(((a.lat>p.lat)!==(b.lat>p.lat))&&(p.lon<(b.lon-a.lon)*(p.lat-a.lat)/(b.lat-a.lat)+a.lon))inside=!inside;} return inside; }
+    function pointSegmentDistance(p,a,b){ const lat0=p.lat*Math.PI/180, x=q=>(q.lon-p.lon)*111320*Math.cos(lat0), y=q=>(q.lat-p.lat)*111320; const ax=x(a),ay=y(a),bx=x(b),by=y(b),dx=bx-ax,dy=by-ay; const t=Math.max(0,Math.min(1,-(ax*dx+ay*dy)/(dx*dx+dy*dy||1))); return Math.hypot(ax+t*dx,ay+t*dy); }
+    function haversine(a,b){ const R=6371000, p1=a.lat*Math.PI/180,p2=b.lat*Math.PI/180,dp=(b.lat-a.lat)*Math.PI/180,dl=(b.lon-a.lon)*Math.PI/180; const x=Math.sin(dp/2)**2+Math.cos(p1)*Math.cos(p2)*Math.sin(dl/2)**2; return 2*R*Math.asin(Math.sqrt(x)); }
+    function destination(origin,meters,bearing){
+      const R=6371000,d=meters/R,t=bearing*Math.PI/180,p1=origin.lat*Math.PI/180,l1=origin.lon*Math.PI/180;
+      const p2=Math.asin(Math.sin(p1)*Math.cos(d)+Math.cos(p1)*Math.sin(d)*Math.cos(t));
+      const l2=l1+Math.atan2(Math.sin(t)*Math.sin(d)*Math.cos(p1),Math.cos(d)-Math.sin(p1)*Math.sin(p2));
+      return {lat:p2*180/Math.PI,lon:l2*180/Math.PI};
+    }
+
+    function nearestNode(graph,p){ let best=null,bd=Infinity; for(const n of graph.nodes.values()){const d=haversine(p,n);if(d<bd){bd=d;best=n;}} return best; }
+    function findLoop(graph,target,preset) {
+      const start=nearestNode(graph,state.location); if(!start)return null;
+      let radius=target/(2*Math.PI), best=null;
+      for(let attempt=0;attempt<3;attempt++) {
+        const rotation=28+attempt*17, count=4;
+        const waypoints=[start];
+        for(let i=0;i<count;i++) waypoints.push(nearestNode(graph,destination(state.location,radius,rotation+i*360/count)));
+        waypoints.push(start);
+        const used=new Set(), ids=[]; let total=0,ok=true;
+        for(let i=1;i<waypoints.length;i++) {
+          if(!waypoints[i-1]||!waypoints[i]||waypoints[i-1].id===waypoints[i].id)continue;
+          const path=dijkstra(graph,waypoints[i-1].id,waypoints[i].id,preset,used);
+          if(!path){ok=false;break;}
+          if(ids.length)path.ids.shift(); ids.push(...path.ids); total+=path.distance; path.edges.forEach(e=>used.add(e));
+        }
+        if(ok&&ids.length>2){const candidate={coords:ids.map(id=>[graph.nodes.get(id).lat,graph.nodes.get(id).lon]),distance:total}; if(!best||Math.abs(total-target)<Math.abs(best.distance-target))best=candidate; if(Math.abs(total-target)/target<=.15)break; radius*=Math.max(.65,Math.min(1.5,target/total));}
+        else radius*=.78;
+      }
+      return best;
+    }
+    function edgeCost(e,preset,reused){ let factor=1; if(preset==='nature'&&e.green)factor*=.48; if(preset==='nostops'&&e.nearCross)factor*=4.2; if(preset==='scenic'){if(e.green)factor*=.62;if(e.water)factor*=.58;if(e.climb>1)factor*=.88;} if(preset==='balanced'&&e.green)factor*=.9; if(e.highway==='steps')factor*=1.45; if(reused)factor*=6; return Math.max(e.distance*.22,e.distance*factor); }
+    function dijkstra(graph,start,goal,preset,used) {
+      const dist=new Map([[start,0]]), prev=new Map(), heap=new MinHeap(); heap.push([0,start]);
+      while(heap.size){const [cost,id]=heap.pop();if(cost!==dist.get(id))continue;if(id===goal)break;for(const e of graph.adj.get(id)||[]){const nc=cost+edgeCost(e,preset,used.has(e.key));if(nc<(dist.get(e.to)??Infinity)){dist.set(e.to,nc);prev.set(e.to,{id,edge:e});heap.push([nc,e.to]);}}}
+      if(!prev.has(goal))return null; const ids=[goal],edges=[],edgeKeys=[];let cur=goal,actual=0;while(cur!==start){const p=prev.get(cur);if(!p)return null;actual+=p.edge.distance;edgeKeys.push(p.edge.key);edges.push(p.edge);cur=p.id;ids.push(cur);} ids.reverse(); return {ids,distance:actual,edges:edgeKeys};
+    }
+    class MinHeap { constructor(){this.a=[];} get size(){return this.a.length;} push(x){let i=this.a.push(x)-1;while(i){let p=(i-1)>>1;if(this.a[p][0]<=x[0])break;this.a[i]=this.a[p];i=p;}this.a[i]=x;} pop(){const root=this.a[0],last=this.a.pop();if(this.a.length){let i=0;this.a[0]=last;while(true){let l=i*2+1,r=l+1,s=i;if(l<this.a.length&&this.a[l][0]<this.a[s][0])s=l;if(r<this.a.length&&this.a[r][0]<this.a[s][0])s=r;if(s===i)break;[this.a[i],this.a[s]]=[this.a[s],this.a[i]];i=s;}}return root;} }
+    function drawRoute(coords){ if(state.routeLayer)map.removeLayer(state.routeLayer);state.routeLayer=L.polyline(coords,{color:'#126b49',weight:7,opacity:.95,lineCap:'round',lineJoin:'round'}).addTo(map);state.routeLayer.bindTooltip('Your running loop');map.fitBounds(state.routeLayer.getBounds(),{padding:[45,45]});document.querySelector('.map-hint').style.display='none'; }
+  </script>
+</body>
+</html>
