@@ -51,6 +51,10 @@
     #map { position:absolute; inset:0; background:#dfe5dc; }
     .map-hint { position:absolute; z-index:450; top:20px; left:50%; transform:translateX(-50%); padding:10px 14px; border-radius:999px; background:rgba(255,254,249,.92); box-shadow:0 5px 20px rgba(0,0,0,.08); font-size:12px; color:var(--muted); pointer-events:none; white-space:nowrap; }
     .start-marker { width:22px!important; height:22px!important; margin:-11px!important; border:5px solid white; border-radius:50%; background:var(--green); box-shadow:0 2px 10px rgba(0,0,0,.3); }
+    .end-marker { width:22px!important; height:22px!important; margin:-11px!important; border:5px solid white; border-radius:4px; background:#d4663f; box-shadow:0 2px 10px rgba(0,0,0,.3); }
+    .conditional { display:none; margin-top:12px; }
+    .conditional.show { display:block; }
+    .conditional label { margin-top:0; }
     .leaflet-control-attribution { font-size:10px; }
     @media (max-width:760px) { .shell{display:flex; flex-direction:column;} .panel{padding:22px 20px; border:0;} h1{margin-top:25px;font-size:37px;} .map-wrap{min-height:52vh; flex:1;} }
   </style>
@@ -59,14 +63,31 @@
   <main class="shell">
     <section class="panel">
       <div class="brand"><span class="logo">↗</span> activ</div>
-      <h1>A better loop starts here.</h1>
-      <p class="intro">Pick your distance and what matters today. We’ll find a runnable loop from your doorstep.</p>
+      <h1>A better route starts here.</h1>
+      <p class="intro">Pick your distance, shape, and what matters today. We’ll build a runnable route from your doorstep.</p>
 
       <button id="locate" class="location"><span>◎</span><span>Use my location</span></button>
       <div id="coords" class="coords">Used to generate your route. Your exact location is not saved.</div>
 
       <label for="distance">Distance</label>
       <div class="distance-wrap"><input id="distance" type="number" value="3" min="0.5" max="20" step="0.5" inputmode="decimal"><span class="unit">miles</span></div>
+
+      <label for="shape">Route shape</label>
+      <select id="shape">
+        <option value="loop">Loop</option>
+        <option value="outback">Out-and-Back</option>
+        <option value="oneway">One-Way</option>
+        <option value="park">Park Laps</option>
+      </select>
+      <p id="shapeNote" class="preset-note">Starts and finishes at your location.</p>
+      <div id="directionControls" class="conditional">
+        <label for="direction">Direction</label>
+        <select id="direction"><option value="auto">Choose for me</option><option value="north">North</option><option value="east">East</option><option value="south">South</option><option value="west">West</option></select>
+      </div>
+      <div id="parkControls" class="conditional">
+        <label for="parkFinish">Finish</label>
+        <select id="parkFinish"><option value="return">Return to start</option><option value="park">Finish at the park</option></select>
+      </div>
 
       <label for="preset">Route style</label>
       <select id="preset">
@@ -77,7 +98,7 @@
       </select>
       <p id="presetNote" class="preset-note">A practical mix of direct streets and pleasant paths.</p>
 
-      <button id="generate" class="generate" disabled>Generate my loop</button>
+      <button id="generate" class="generate" disabled>Generate my route</button>
       <div id="status" class="status" role="status" aria-live="polite"></div>
       <div id="devPanel" class="dev-panel" aria-live="polite"></div>
       <div id="result" class="result">
@@ -98,7 +119,7 @@
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
   <script>
     'use strict';
-    const state = { location:null, routeLayer:null, marker:null, timings:{}, cacheSource:'' };
+    const state = { location:null, routeLayer:null, marker:null, endMarker:null, timings:{}, cacheSource:'' };
     const $ = id => document.getElementById(id);
     const map = L.map('map', { zoomControl:false }).setView([40, -98], 4);
     L.control.zoom({position:'bottomright'}).addTo(map);
@@ -110,9 +131,12 @@
       nostops:'Avoids traffic signals and marked crossings where possible.',
       scenic:'Seeks greenery, water, and varied terrain when mapped.'
     };
+    const shapeCopy={loop:'Starts and finishes at your location.',outback:'Runs in one direction, turns around, and returns.',oneway:'Covers your distance and finishes somewhere new.',park:'Routes to a mapped park for repeated circuits.'};
     $('preset').addEventListener('change', e => $('presetNote').textContent = presetCopy[e.target.value]);
+    $('shape').addEventListener('change',syncShape);
     $('locate').addEventListener('click', locate);
     $('generate').addEventListener('click', generate);
+    function syncShape(){const shape=$('shape').value;$('shapeNote').textContent=shapeCopy[shape];$('directionControls').className='conditional'+(['outback','oneway'].includes(shape)?' show':'');$('parkControls').className='conditional'+(shape==='park'?' show':'');}
     // Deterministic QA hook. Supplying ?testLat=...&testLon=... bypasses
     // geolocation prompts without adding controls to the production UI.
     const testParams=new URLSearchParams(location.search),testLat=Number(testParams.get('testLat')),testLon=Number(testParams.get('testLon'));
@@ -163,30 +187,32 @@
       $('generate').disabled=true; $('result').className='result';
       try {
         state.timings={}; const totalStart=performance.now();
-        status('Asking the activ server to build your loop…');
+        status('Asking the activ server to build your route…');
         const loadStart=performance.now();
-        const response=await fetch('/api/routes',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({latitude:state.location.lat,longitude:state.location.lon,distanceMiles:miles,preset:$('preset').value})});
+        const shape=$('shape').value;
+        const response=await fetch('/api/routes',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({latitude:state.location.lat,longitude:state.location.lon,distanceMiles:miles,preset:$('preset').value,shape,direction:$('direction').value,returnToStart:$('parkFinish').value==='return'})});
         const result=await response.json();
         if(!response.ok)throw new Error(result.error?.message||result.error||'The activ server could not generate a route.');
         mark('server request',loadStart);state.cacheSource=result.meta?.mapSource||'server';
         if (!result.coordinates || result.coordinates.length<2) throw new Error('The server returned an incomplete route.');
-        drawRoute(result.coordinates);
+        drawRoute(result.coordinates,!result.meta?.returnsToStart);
         const actual=result.distanceMiles;
         const delta=Math.round(Math.abs(actual-miles)/miles*100);
         $('actual').textContent=actual.toFixed(2);
-        $('match').innerHTML=delta<=15?`${presetLabel()}<br>within ${delta}% of target`:`${presetLabel()}<br>${delta}% from target`;
+        $('match').innerHTML=delta<=15?`${shapeLabel()} · ${presetLabel()}<br>within ${delta}% of target`:`${shapeLabel()} · ${presetLabel()}<br>${delta}% from target`;
         $('greenStat').textContent=`${result.stats.greenPercent}%`;
         $('crossingStat').textContent=String(result.stats.crossings);
         $('repeatStat').textContent=`${result.stats.repeatedPercent}%`;
         $('result').className='result show';
-        status(delta<=15?'Loop ready. Have a great run.':'Closest loop found — actual distance shown below.');
+        status(delta<=15?'Route ready. Have a great run.':'Closest route found — actual distance shown below.');
         mark('total',totalStart);
       } catch(err) { console.error(err); status(err.message||'Something went wrong while generating the route.',true); }
       finally { $('generate').disabled=false; }
     }
     const presetLabel=()=>$('preset').options[$('preset').selectedIndex].text;
+    const shapeLabel=()=>$('shape').options[$('shape').selectedIndex].text;
 
-    function drawRoute(coords){ if(state.routeLayer)map.removeLayer(state.routeLayer);state.routeLayer=L.polyline(coords,{color:'#126b49',weight:7,opacity:.95,lineCap:'round',lineJoin:'round'}).addTo(map);state.routeLayer.bindTooltip('Your running loop');map.fitBounds(state.routeLayer.getBounds(),{padding:[45,45]});document.querySelector('.map-hint').style.display='none'; }
+    function drawRoute(coords,showEnd=false){if(state.routeLayer)map.removeLayer(state.routeLayer);if(state.endMarker){map.removeLayer(state.endMarker);state.endMarker=null;}state.routeLayer=L.polyline(coords,{color:'#126b49',weight:7,opacity:.95,lineCap:'round',lineJoin:'round'}).addTo(map);state.routeLayer.bindTooltip('Your running route');if(showEnd){const end=coords[coords.length-1];state.endMarker=L.marker(end,{icon:L.divIcon({className:'end-marker',html:''})}).addTo(map).bindTooltip('Finish');}map.fitBounds(state.routeLayer.getBounds(),{padding:[45,45]});document.querySelector('.map-hint').style.display='none';}
   </script>
 </body>
 </html>
