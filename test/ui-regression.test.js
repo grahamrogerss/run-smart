@@ -3,6 +3,8 @@ import assert from'node:assert/strict';
 import{readFile}from'node:fs/promises';
 
 const html=await readFile(new URL('../index.html',import.meta.url),'utf8');
+const server=await readFile(new URL('../server.js',import.meta.url),'utf8');
+const placesApi=await readFile(new URL('../api/places.js',import.meta.url),'utf8');
 
 test('the selected route is always rendered as a solid line',()=>{
   const selectRoute=html.match(/function selectRoute\(index\)\{.*?\n/s)?.[0]||'';
@@ -38,4 +40,12 @@ test('developer diagnostics expose actionable discovery details',()=>{
   for(const field of['requestId','httpStatus','durationMs','radiusMeters','attempts'])assert.match(html,new RegExp(field));
   assert.match(html,/Copy diagnostic report/);
   assert.match(html,/location:state\.location\?\{lat:Number\(state\.location\.lat\.toFixed\(3\)\)/);
+});
+
+test('both deployment entry points return place request diagnostics',()=>{
+  for(const source of[server,placesApi]){
+    assert.match(source,/X-Activ-Request-Id/);
+    assert.match(source,/attempts:error\.attempts/);
+    assert.match(source,/durationMs:error\.durationMs/);
+  }
 });
