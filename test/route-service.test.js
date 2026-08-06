@@ -22,7 +22,9 @@ test('one-way route finishes somewhere new',async()=>{const route=await createRo
 
 test('out-and-back route reverses to its start',async()=>{const route=await createRoute({latitude:-34.593,longitude:-58.38,distanceMiles:1,preset:'balanced',shape:'outback',direction:'north'},{loadMapData});assert.equal(route.meta.returnsToStart,true);assert.deepEqual(route.coordinates[0],route.coordinates.at(-1));assert.ok(route.stats.repeatedPercent>=45);assert.ok(route.meta.targetErrorPercent<=15);});
 
-test('park laps use mapped green paths and can return home',async()=>{const route=await createRoute({latitude:-34.593,longitude:-58.38,distanceMiles:3,preset:'nature',shape:'park',returnToStart:true},{loadMapData});assert.equal(route.meta.returnsToStart,true);assert.deepEqual(route.coordinates[0],route.coordinates.at(-1));assert.ok(route.stats.greenPercent>0);assert.ok(route.meta.targetErrorPercent<=15);});
+test('park laps repeat a closed green circuit and return home once',async()=>{const route=await createRoute({latitude:-34.593,longitude:-58.38,distanceMiles:3,preset:'nature',shape:'park',returnToStart:true},{loadMapData});assert.equal(route.meta.returnsToStart,true);assert.deepEqual(route.coordinates[0],route.coordinates.at(-1));assert.ok(route.stats.greenPercent>=85);assert.ok(route.stats.lapCount>=2);assert.ok(route.meta.targetErrorPercent<=15);});
+
+test('park laps expose intentional lap count instead of generic route repetition',async()=>{const route=await createRoute({latitude:-34.593,longitude:-58.38,distanceMiles:3,preset:'balanced',shape:'park',returnToStart:false},{loadMapData});assert.equal(route.meta.returnsToStart,false);assert.ok(Number.isInteger(route.stats.lapCount));assert.ok(route.stats.lapCount>=2);assert.ok(route.alternatives.every(option=>option.stats.lapCount>=1));});
 
 test('nature routes require the feature layer instead of silently using roads only',async()=>{let options;await createRoute({latitude:-34.593,longitude:-58.38,distanceMiles:1,preset:'nature',shape:'oneway'},{loadMapData:async(box,value)=>{options=value;return{elements:fixture(),source:'test fixture'};}});assert.equal(options.requireFeatures,true);});
 
