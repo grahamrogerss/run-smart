@@ -15,3 +15,15 @@ test('the winner animation cannot hide route segments at different zoom levels',
   assert.match(winnerStyles,/opacity/);
   assert.doesNotMatch(winnerStyles,/stroke-dash/);
 });
+
+test('nearby places start loading immediately and expand to five miles',()=>{
+  const setLocation=html.match(/function setLocation\(.*?\n/s)?.[0]||'';
+  assert.match(setLocation,/discoverPlaces\(\)/);
+  assert.match(html,/fetchPlaces\(2414\)/);
+  assert.match(html,/fetchPlaces\(8047\)/);
+});
+
+test('a selected place is sent to routing as a destination',()=>{
+  assert.match(html,/destinationLat:state\.selectedPlace\.lat/);
+  assert.match(html,/destinationLon:state\.selectedPlace\.lon/);
+});
