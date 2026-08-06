@@ -27,3 +27,8 @@ test('a selected place is sent to routing as a destination',()=>{
   assert.match(html,/destinationLat:state\.selectedPlace\.lat/);
   assert.match(html,/destinationLon:state\.selectedPlace\.lon/);
 });
+
+test('failed discovery is never described as no nearby parks',()=>{
+  assert.match(html,/Couldn’t load nearby spots/);
+  assert.match(html,/Search unavailable/);
+});
