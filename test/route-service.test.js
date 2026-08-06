@@ -13,7 +13,7 @@ test('rejects invalid client input before loading map data',async()=>{let called
 
 test('persistent cache survives clearing server memory',async()=>{const key=`test-${Date.now()}-${Math.random()}`,value={elements:[{id:42}]};await cacheSet(key,value);clearMemoryCache();const hit=await cacheGet(key);assert.deepEqual(hit.value,value);assert.equal(hit.source,'persistent disk cache');});
 
-test('cache status reports its backend without exposing credentials',()=>{const status=cacheStatus();assert.equal(status.persistentBackend,'local-disk');assert.equal(status.ttlDays,7);assert.deepEqual(Object.keys(status).sort(),['memoryEntries','persistentBackend','ttlDays']);});
+test('cache status reports fresh and stale windows without exposing credentials',()=>{const status=cacheStatus();assert.equal(status.persistentBackend,'local-disk');assert.equal(status.ttlDays,7);assert.equal(status.staleFallbackDays,30);assert.deepEqual(Object.keys(status).sort(),['memoryEntries','persistentBackend','staleFallbackDays','ttlDays']);});
 
 test('rate limiter permits a burst then blocks excess requests',()=>{const identity=`test-${Math.random()}`;for(let i=0;i<20;i++)assert.equal(checkRateLimit(identity).allowed,true);const blocked=checkRateLimit(identity);assert.equal(blocked.allowed,false);assert.ok(blocked.retryAfter>0);});
 
